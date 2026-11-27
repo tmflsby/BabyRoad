@@ -1,18 +1,11 @@
 <script lang="ts" setup>
-import type { DataNode } from 'antdv-next/dist/tree';
-
-import type { Recordable } from '@vben/types';
-
 import type { SystemUserApi } from '#/api/system/user';
 
 import { computed, nextTick, ref } from 'vue';
 
-import { Tree, useVbenDrawer } from '@vben/common-ui';
+import { useVbenDrawer } from '@vben/common-ui';
 
-import { Spin } from 'antdv-next';
-
-import { useVbenForm } from '#/adapter/form';
-import { getMenuList } from '#/api/system/menu';
+import { useVbenForm, z } from '#/adapter/form';
 import { createUser, updateUser } from '#/api/system/user';
 import { $t } from '#/locales';
 
@@ -27,17 +20,30 @@ const [Form, formApi] = useVbenForm({
   showDefaultActions: false,
 });
 
-const permissions = ref<DataNode[]>([]);
-const loadingPermissions = ref(false);
+const id = ref<string>();
 
-const id = ref();
 const [Drawer, drawerApi] = useVbenDrawer<null | SystemUserApi.SystemUser>({
   async onConfirm() {
     const { valid } = await formApi.validate();
     if (!valid) return;
-    const values = await formApi.getValues();
+    const values = await formApi.getValues<SystemUserApi.UserFormModel>();
     drawerApi.lock();
-    (id.value ? updateUser(id.value, values) : createUser(values))
+    const isEdit = !!id.value;
+    // 按后端 DTO 字段构造载荷：编辑时不提交 username；password 留空表示不修改；
+    // 空字符串归一化为 undefined；roleIds 传整型数组(后端 @IsInt({each}))
+    const payload: SystemUserApi.UserFormModel = {
+      deptId: values.deptId === '' ? undefined : values.deptId,
+      email: values.email || undefined,
+      gender: values.gender,
+      isEnabled: values.isEnabled,
+      nickname: values.nickname || undefined,
+      phone: values.phone || undefined,
+      remark: values.remark || undefined,
+      roleIds: (values.roleIds ?? []).map(Number),
+      ...(isEdit ? {} : { username: values.username }),
+      ...(values.password ? { password: values.password } : {}),
+    };
+    (isEdit ? updateUser(id.value!, payload) : createUser(payload))
       .then(() => {
         emits('success');
         drawerApi.close();
@@ -50,23 +56,46 @@ const [Drawer, drawerApi] = useVbenDrawer<null | SystemUserApi.SystemUser>({
   async onOpenChange(isOpen) {
     if (isOpen) {
       const data = drawerApi.getData();
+      formData.value = data ?? undefined;
+      id.value = data?.id;
       formApi.reset();
 
-      if (data) {
-        formData.value = data;
-        id.value = data.id;
-      } else {
-        formData.value = undefined;
-        id.value = undefined;
-      }
+      // 编辑时：登录账号不允许修改；密码放宽为可选，留空表示不修改
+      await formApi.updateSchema([
+        {
+          componentProps: { disabled: !!data },
+          fieldName: 'username',
+        },
+        {
+          componentProps: {
+            placeholder: data ? $t('system.user.passwordKeepTip') : undefined,
+          },
+          fieldName: 'password',
+          rules: data
+            ? z
+                .string()
+                .min(
+                  6,
+                  $t('ui.formRules.minLength', [
+                    $t('system.user.password'),
+                    6,
+                  ]),
+                )
+                .or(z.literal(''))
+                .optional()
+            : 'required',
+        },
+      ]);
 
-      if (permissions.value.length === 0) {
-        await loadPermissions();
-      }
       // Wait for Vue to flush DOM updates (form fields mounted)
       await nextTick();
       if (data) {
-        formApi.setValues(data);
+        // 后端 bigint 序列化为字符串，而角色选项 value 为 number，
+        // roleIds 转成 number 才能匹配到角色名称标签
+        formApi.setValues({
+          ...data,
+          roleIds: (data.roleIds ?? []).map(Number),
+        });
       }
     }
   },
@@ -74,48 +103,14 @@ const [Drawer, drawerApi] = useVbenDrawer<null | SystemUserApi.SystemUser>({
 
 defineExpose({ drawerApi });
 
-async function loadPermissions() {
-  loadingPermissions.value = true;
-  try {
-    const res = await getMenuList();
-    permissions.value = res as unknown as DataNode[];
-  } finally {
-    loadingPermissions.value = false;
-  }
-}
-
 const getDrawerTitle = computed(() => {
   return formData.value?.id
-    ? $t('common.edit', $t('system.user.name'))
-    : $t('common.create', $t('system.user.name'));
+    ? $t('common.edit', $t('system.user.username'))
+    : $t('common.create', $t('system.user.username'));
 });
-
-function getNodeClass(node: Recordable<any>) {
-  const classes: string[] = [];
-  if (node.value?.type === 'button') {
-    classes.push('inline-flex');
-  }
-
-  return classes.join(' ');
-}
 </script>
 <template>
   <Drawer :title="getDrawerTitle">
-    <Form>
-      <template #permissions="slotProps">
-        <Spin :spinning="loadingPermissions" :classes="{ root: 'w-full' }">
-          <Tree
-            :tree-data="permissions"
-            multiple
-            bordered
-            :default-expanded-level="2"
-            :get-node-class="getNodeClass"
-            v-bind="slotProps.componentProps"
-            value-field="id"
-            label-field="name"
-          />
-        </Spin>
-      </template>
-    </Form>
+    <Form />
   </Drawer>
 </template>

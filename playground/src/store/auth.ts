@@ -12,6 +12,7 @@ import { defineStore } from 'pinia';
 
 import { getAccessCodesApi, getUserInfoApi, loginApi, logoutApi } from '#/api';
 import { $t } from '#/locales';
+import { resolveLandingPath } from '#/router/landing-path';
 
 export const useAuthStore = defineStore('auth', () => {
   const accessStore = useAccessStore();
@@ -34,7 +35,11 @@ export const useAuthStore = defineStore('auth', () => {
     let userInfo: null | UserInfo = null;
     try {
       loginLoading.value = true;
-      const { accessToken } = await loginApi(params);
+      // homePath 与 accessToken 一同由 /auth/login 下发，比等待 /user/info 更早可用
+      const { accessToken, homePath: loginHomePath } = await loginApi({
+        username: params.username,
+        password: params.password,
+      });
 
       // 如果成功获取到 accessToken
       if (accessToken) {
@@ -56,7 +61,14 @@ export const useAuthStore = defineStore('auth', () => {
           onSuccess
             ? await onSuccess?.()
             : await router.push(
-                userInfo.homePath || preferences.app.defaultHomePath,
+                // 登录后恒定落在后端下发的 homePath，只有后端没给 homePath 时
+                // 才使用 defaultHomePath；登录页携带的真实深链仍然优先
+                resolveLandingPath({
+                  defaultHomePath: preferences.app.defaultHomePath,
+                  loginHomePath,
+                  redirect: router.currentRoute.value.query.redirect,
+                  userInfoHomePath: userInfo?.homePath,
+                }),
               );
         }
 

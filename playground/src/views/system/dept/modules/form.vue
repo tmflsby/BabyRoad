@@ -18,7 +18,7 @@ const formData = ref<SystemDeptApi.SystemDept>();
 type DeptModalData =
   | null
   | SystemDeptApi.SystemDept
-  | { pid: SystemDeptApi.SystemDept['pid'] };
+  | { parentId: SystemDeptApi.SystemDept['parentId'] };
 
 const getTitle = computed(() => {
   return formData.value?.id
@@ -42,11 +42,20 @@ const [Modal, modalApi] = useVbenModal<DeptModalData>({
     const { valid } = await formApi.validate();
     if (valid) {
       modalApi.lock();
-      const data = await formApi.getValues();
+      const data = await formApi.getValues<SystemDeptApi.DeptFormModel>();
+      // 未选择上级部门时按顶级处理(parentId=0)；清空输入产生的空字符串会被
+      // 后端 DTO 校验拒绝，统一转为 undefined
+      const payload = { ...data, parentId: data.parentId ?? 0 };
+      Object.keys(payload).forEach((key) => {
+        const k = key as keyof typeof payload;
+        if (payload[k] === '') {
+          payload[k] = undefined as never;
+        }
+      });
       try {
         await (formData.value?.id
-          ? updateDept(formData.value.id, data)
-          : createDept(data));
+          ? updateDept(formData.value.id, payload)
+          : createDept(payload));
         modalApi.close();
         emit('success');
       } finally {
@@ -59,9 +68,10 @@ const [Modal, modalApi] = useVbenModal<DeptModalData>({
       const data = modalApi.getData();
       if (data) {
         formData.value = 'id' in data ? data : undefined;
+        // 顶级部门 parentId 为 0(bigint 可能以字符串 '0' 返回)，上级选择框保持空白
         const formValues = {
           ...data,
-          ...(data.pid === 0 ? { pid: undefined } : {}),
+          ...(Number(data.parentId) === 0 ? { parentId: undefined } : {}),
         };
         formApi.setValues(formValues);
       } else {

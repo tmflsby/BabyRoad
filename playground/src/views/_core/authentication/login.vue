@@ -15,16 +15,16 @@ const authStore = useAuthStore();
 
 const MOCK_USER_OPTIONS: BasicOption[] = [
   {
-    label: 'Super',
-    value: 'vben',
+    label: 'SuperAdmin',
+    value: 'SuperAdmin',
   },
   {
     label: 'Admin',
-    value: 'admin',
+    value: 'Admin',
   },
   {
     label: 'User',
-    value: 'jack',
+    value: 'User',
   },
 ];
 

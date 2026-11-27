@@ -9,6 +9,7 @@ import { accessRoutes, coreRouteNames } from '#/router/routes';
 import { useAuthStore } from '#/store';
 
 import { generateAccess } from './access';
+import { isDefaultHomeEntry, resolveLandingPath } from './landing-path';
 
 /**
  * 通用守卫配置
@@ -51,11 +52,17 @@ function setupAccessGuard(router: Router) {
     // 基本路由，这些路由不需要进入权限拦截
     if (coreRouteNames.includes(to.name)) {
       if (to.path === LOGIN_PATH && accessStore.accessToken) {
-        return decodeURIComponent(
-          (to.query?.redirect as string) ||
-            userStore.userInfo?.homePath ||
-            preferences.app.defaultHomePath,
-        );
+        // 已登录却停在登录页（刷新、后退、直接输入地址）时 userInfo 可能尚未拉取，
+        // 缺少 homePath 会让落地页退化成 /dashboard，这里补拉一次用户信息保证恒定落 homePath。
+        // 拉取失败（token 失效等）不阻断本次跳转，按无 homePath 的旧逻辑兜底
+        const userInfo =
+          userStore.userInfo ??
+          (await authStore.fetchUserInfo().catch(() => null));
+        return resolveLandingPath({
+          defaultHomePath: preferences.app.defaultHomePath,
+          redirect: to.query.redirect,
+          userInfoHomePath: userInfo?.homePath,
+        });
       }
       return true;
     }
@@ -85,6 +92,17 @@ function setupAccessGuard(router: Router) {
 
     // 是否已经生成过动态路由
     if (accessStore.isAccessChecked) {
+      const homePath = userStore.userInfo?.homePath;
+      // 会话内访问根路由 '/'（面包屑首页、Logo）同样会重定向到 defaultHomePath，
+      // 后端另有 homePath 时一并改跳 homePath，与登录后的落地页保持一致。
+      // homePath 与 defaultHomePath 重合时必须放行，否则守卫自己会造成无限重定向
+      if (
+        homePath &&
+        homePath !== to.path &&
+        isDefaultHomeEntry(to.path, preferences.app.defaultHomePath)
+      ) {
+        return { path: homePath, replace: true };
+      }
       return true;
     }
 
@@ -113,18 +131,17 @@ function setupAccessGuard(router: Router) {
         console.error('Failed to preload dictionaries:', error);
       });
 
-    let redirectPath: string;
-    if (from.query.redirect) {
-      redirectPath = from.query.redirect as string;
-    } else if (to.fullPath === preferences.app.defaultHomePath) {
-      redirectPath = preferences.app.defaultHomePath;
-    } else if (userInfo.homePath && to.fullPath === userInfo.homePath) {
-      redirectPath = userInfo.homePath;
-    } else {
-      redirectPath = to.fullPath;
-    }
+    // 落地页统一交给 resolveLandingPath：真实深链优先，根路由 '/' 与 defaultHomePath
+    // 这两个兜底入口都让位给后端下发的 homePath，避免登录后随机落到 /dashboard
+    const redirectPath = resolveLandingPath({
+      defaultHomePath: preferences.app.defaultHomePath,
+      redirect: from.query.redirect,
+      target: to.fullPath,
+      userInfoHomePath: userInfo.homePath,
+    });
+
     return {
-      ...router.resolve(decodeURIComponent(redirectPath)),
+      ...router.resolve(redirectPath),
       replace: true,
     };
   });

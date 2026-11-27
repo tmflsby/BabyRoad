@@ -35,7 +35,7 @@ function onEdit(row: SystemDeptApi.SystemDept) {
  * @param row
  */
 function onAppend(row: SystemDeptApi.SystemDept) {
-  formModalApi.setData({ pid: row.id }).open();
+  formModalApi.setData({ parentId: row.id }).open();
 }
 
 /**
@@ -51,14 +51,14 @@ function onCreate() {
  */
 function onDelete(row: SystemDeptApi.SystemDept) {
   const hideLoading = message.loading({
-    content: $t('ui.actionMessage.deleting', [row.name]),
+    content: $t('ui.actionMessage.deleting', [row.deptName]),
     duration: 0,
     key: 'action_process_msg',
   });
   deleteDept(row.id)
     .then(() => {
       message.success({
-        content: $t('ui.actionMessage.deleteSuccess', [row.name]),
+        content: $t('ui.actionMessage.deleteSuccess', [row.deptName]),
         key: 'action_process_msg',
       });
       refreshGrid();
@@ -113,8 +113,10 @@ const [Grid, gridApi] = useVbenVxeGrid({
       refresh: true,
       zoom: true,
     },
+    // 后端 /system/dept/list 直接返回嵌套 children 的树形数据
     treeConfig: {
-      parentField: 'pid',
+      childrenField: 'children',
+      expandAll: true,
       rowField: 'id',
       transform: false,
     },
@@ -131,7 +133,7 @@ function refreshGrid() {
 <template>
   <Page auto-content-height>
     <FormModal @success="refreshGrid" />
-    <Grid table-title="部门列表">
+    <Grid :table-title="$t('system.dept.list')">
       <template #toolbar-tools>
         <Button type="primary" @click="onCreate">
           <Plus class="size-5" />

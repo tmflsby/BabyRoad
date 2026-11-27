@@ -20,6 +20,7 @@ import { $t } from '#/locales';
 import { createDateRangeCodec } from '#/utils/date-range-codec';
 
 import { useColumns, useGridFormSchema } from './data';
+import Detail from './modules/detail.vue';
 import Form from './modules/form.vue';
 
 interface RoleSearchFormValues extends Record<string, unknown> {
@@ -39,6 +40,11 @@ const [FormDrawer, formDrawerApi] = useVbenDrawer({
   destroyOnClose: true,
 });
 
+const [DetailDrawer, detailDrawerApi] = useVbenDrawer({
+  connectedComponent: Detail,
+  destroyOnClose: true,
+});
+
 const [Grid, gridApi] = useVbenVxeGrid({
   formOptions: {
     codec: roleSearchCodec,
@@ -52,11 +58,13 @@ const [Grid, gridApi] = useVbenVxeGrid({
     proxyConfig: {
       ajax: {
         query: async ({ page }, formValues: RoleSearchSubmitValues) => {
-          return await getRoleList({
+          // 后端返回 {list,total,page,pageSize}，映射为 vxe-grid 需要的 items/total
+          const { list, total } = await getRoleList({
             page: page.currentPage,
             pageSize: page.pageSize,
             ...formValues,
           });
+          return { items: list, total };
         },
       },
     },
@@ -78,6 +86,10 @@ function onActionClick(e: OnActionClickParams<SystemRoleApi.SystemRole>) {
   switch (e.code) {
     case 'delete': {
       onDelete(e.row);
+      break;
+    }
+    case 'detail': {
+      onDetail(e.row);
       break;
     }
     case 'edit': {
@@ -123,10 +135,10 @@ async function onStatusChange(
   };
   try {
     await confirm(
-      `你要将${row.name}的状态切换为 【${status[newStatus.toString()]}】 吗？`,
+      `你要将${row.roleName}的状态切换为 【${status[newStatus.toString()]}】 吗？`,
       `切换状态`,
     );
-    await updateRole(row.id, { status: newStatus });
+    await updateRole(row.id, { isEnabled: newStatus as 0 | 1 });
     return true;
   } catch {
     return false;
@@ -137,16 +149,21 @@ function onEdit(row: SystemRoleApi.SystemRole) {
   formDrawerApi.setData(row).open();
 }
 
+/** 详情抽屉：备注等未在表格列展示的字段统一在详情中查看 */
+function onDetail(row: SystemRoleApi.SystemRole) {
+  detailDrawerApi.setData(row).open();
+}
+
 function onDelete(row: SystemRoleApi.SystemRole) {
   const hideLoading = message.loading({
-    content: $t('ui.actionMessage.deleting', [row.name]),
+    content: $t('ui.actionMessage.deleting', [row.roleName]),
     duration: 0,
     key: 'action_process_msg',
   });
   deleteRole(row.id)
     .then(() => {
       message.success({
-        content: $t('ui.actionMessage.deleteSuccess', [row.name]),
+        content: $t('ui.actionMessage.deleteSuccess', [row.roleName]),
         key: 'action_process_msg',
       });
       onRefresh();
@@ -167,6 +184,7 @@ function onCreate() {
 <template>
   <Page auto-content-height>
     <FormDrawer @success="onRefresh" />
+    <DetailDrawer />
     <Grid :table-title="$t('system.role.list')">
       <template #toolbar-tools>
         <Button type="primary" @click="onCreate">

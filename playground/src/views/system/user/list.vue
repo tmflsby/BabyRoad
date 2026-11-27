@@ -61,12 +61,17 @@ const [Grid, gridApi] = useVbenVxeGrid({
     proxyConfig: {
       ajax: {
         query: async ({ page }, formValues: UserSearchSubmitValues) => {
-          return await getUserList({
+          // 全量下发搜索表单参数（含 gender/remark/startTime/endTime，
+          // 后端 QueryUserDto 同步拓展支持）；
+          // 后端返回 {list,total,page,pageSize}，映射为 vxe-grid 的 items/total
+          const { list, total } = await getUserList({
             page: page.currentPage,
             pageSize: page.pageSize,
             ...formValues,
-            deptId: selectedDeptId.value,
+            // 未选中部门树节点时不参与查询
+            deptId: selectedDeptId.value || undefined,
           });
+          return { items: list, total };
         },
       },
     },
@@ -120,10 +125,10 @@ async function onStatusChange(
   };
   try {
     await confirm(
-      `你要将${row.name}的状态切换为 【${status[newStatus.toString()]}】 吗？`,
+      `你要将${row.username}的状态切换为 【${status[newStatus.toString()]}】 吗？`,
       `切换状态`,
     );
-    await updateUser(row.id, { status: newStatus });
+    await updateUser(row.id, { isEnabled: newStatus as 0 | 1 });
     return true;
   } catch {
     return false;
@@ -140,14 +145,14 @@ function onDetail(row: SystemUserApi.SystemUser) {
 
 function onDelete(row: SystemUserApi.SystemUser) {
   const hideLoading = message.loading({
-    content: $t('ui.actionMessage.deleting', [row.name]),
+    content: $t('ui.actionMessage.deleting', [row.username]),
     duration: 0,
     key: 'action_process_msg',
   });
   deleteUser(row.id)
     .then(() => {
       message.success({
-        content: $t('ui.actionMessage.deleteSuccess', [row.name]),
+        content: $t('ui.actionMessage.deleteSuccess', [row.username]),
         key: 'action_process_msg',
       });
       onRefresh();
@@ -174,8 +179,13 @@ async function loadDeptList() {
   }
 }
 
-function selectDept(v: string) {
-  selectedDeptId.value = v;
+/**
+ * 点击部门树节点：Tree 的 select 事件抛出的是扁平化节点项(FlattenedItem)，
+ * 节点数据在 item.value 中，这里只取部门 id 作为查询条件，
+ * 避免将整个部门对象当作查询参数下发
+ */
+function selectDept(item: Recordable<any>) {
+  selectedDeptId.value = String(item?.value?.id ?? '');
   gridApi.query();
 }
 
@@ -185,7 +195,7 @@ function searchDept(value: string) {
     return;
   }
   const filtered = deptList.value.filter((dept) =>
-    dept.name.toLowerCase().includes(value.toLowerCase()),
+    dept.deptName.toLowerCase().includes(value.toLowerCase()),
   );
   deptList.value = filtered;
 }
@@ -209,7 +219,7 @@ watch(inputSearchValue, (value) => {
           :placeholder="$t('system.user.placeholder')"
         />
         <Tree
-          label-field="name"
+          label-field="deptName"
           value-field="id"
           :tree-data="deptList"
           :default-expanded-level="2"
@@ -245,10 +255,9 @@ watch(inputSearchValue, (value) => {
                   icon: 'lucide:trash-2',
                   danger: true,
                   popConfirm: {
-                    title: $t('ui.actionMessage.deleteConfirm', [row.name]),
+                    title: $t('ui.actionMessage.deleteConfirm', [row.username]),
                     confirm: () => onDelete(row),
                   },
-                  auth: ['AC_100100'],
                 },
               ]"
               align="center"

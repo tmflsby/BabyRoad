@@ -10,6 +10,11 @@ export namespace AuthApi {
   /** 登录接口返回值 */
   export interface LoginResult {
     accessToken: string;
+    /**
+     * 登录用户的首页路径，与 /user/info 下发的是同一个值，后端当前下发
+     * DEFAULT_HOME_PATH。缺失时前端回退到 preferences.app.defaultHomePath。
+     */
+    homePath?: string;
   }
 
   export interface RefreshTokenResult {
@@ -33,7 +38,7 @@ export async function loginApi(data: AuthApi.LoginParams) {
 export async function refreshTokenApi() {
   return baseRequestClient.post<AuthApi.RefreshTokenResult>(
     '/auth/refresh',
-    null,
+    {},
     {
       withCredentials: true,
     },
@@ -44,9 +49,13 @@ export async function refreshTokenApi() {
  * 退出登录
  */
 export async function logoutApi() {
-  return baseRequestClient.post('/auth/logout', null, {
-    withCredentials: true,
-  });
+  return requestClient.post(
+    '/auth/logout',
+    {},
+    {
+      withCredentials: true,
+    },
+  );
 }
 
 /**

@@ -47,6 +47,8 @@ interface DateRangeCodecOptions<
   TEndField extends string,
 > {
   endField: TEndField;
+  /** 提交时的格式化模板，默认按日期粒度 `YYYY-MM-DD`（后端仅需日期区间时使用） */
+  format?: string;
   rangeField: OptionalDateRangeField<TFormValues, TRangeField> & TRangeField;
   startField: TStartField;
 }
@@ -66,7 +68,7 @@ export function createDateRangeCodec<
       TEndField
     >,
   ) {
-    const { endField, startField } = options;
+    const { endField, format = 'YYYY-MM-DD', startField } = options;
     const rangeField = options.rangeField as TRangeField;
     type SubmitValues = DateRangeSubmitValues<
       TFormValues,
@@ -88,8 +90,8 @@ export function createDateRangeCodec<
         const range = value as DateRange | undefined;
         return {
           ...formValues,
-          [endField]: range?.[1]?.format('YYYY-MM-DD'),
-          [startField]: range?.[0]?.format('YYYY-MM-DD'),
+          [endField]: range?.[1]?.format(format),
+          [startField]: range?.[0]?.format(format),
         } as SubmitValues;
       },
     };

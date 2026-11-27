@@ -24,7 +24,12 @@ import {
 import { $t } from '#/locales';
 import { componentKeys } from '#/router/routes';
 
-import { getMenuTypeOptions } from '../data';
+import {
+  getMenuTypeOptions,
+  MENU_PATH_REGEX,
+  MENU_PERMS_REGEX,
+  MENU_URL_REGEX,
+} from '../data';
 
 const emit = defineEmits<{
   success: [];
@@ -34,43 +39,114 @@ const titleSuffix = ref<string>();
 
 type MenuDrawerData =
   | SystemMenuApi.SystemMenu
-  | { pid?: SystemMenuApi.SystemMenu['pid'] };
-type MenuSubmitValues = Omit<SystemMenuApi.SystemMenu, 'children' | 'id'>;
-type MenuFormValues = MenuSubmitValues & { linkSrc?: string };
+  | { parentId?: SystemMenuApi.SystemMenu['parentId'] };
+type MenuSubmitValues = SystemMenuApi.MenuFormModel;
+type MenuFormValues = {
+  /** 内嵌(E)/外链(L)的链接地址，仅前端表单使用，提交时写入 meta.iframeSrc/meta.link */
+  linkUrl?: string;
+  [key: string]: any;
+  meta?: SystemMenuApi.MenuMeta;
+} & SystemMenuApi.MenuFormModel;
+
+/** 判断当前菜单类型是否命中指定集合（表单值未填时返回 false） */
+function isMenuType(
+  values: Partial<MenuFormValues>,
+  ...types: SystemMenuApi.MenuType[]
+) {
+  return types.includes(values.menuType as SystemMenuApi.MenuType);
+}
+
+/** 空字符串归一化为 undefined：后端 @IsOptional 不会跳过 ''，会被 DTO 的正则/长度校验拒绝 */
+function blankToUndefined(value?: string) {
+  return value === '' ? undefined : value;
+}
+
+/**
+ * 上级菜单候选树：后端禁止将菜单挂到自身或其子孙节点下，此处提前剔除，
+ * 避免用户提交后才收到 409
+ */
+function filterSelectableMenus(
+  nodes: SystemMenuApi.SystemMenu[],
+  excludeId?: string,
+): SystemMenuApi.SystemMenu[] {
+  if (!excludeId) {
+    return nodes;
+  }
+  const prune = (
+    list: SystemMenuApi.SystemMenu[],
+  ): SystemMenuApi.SystemMenu[] =>
+    list
+      .filter((node) => String(node.id) !== String(excludeId))
+      .map((node) => ({
+        ...node,
+        children: node.children ? prune(node.children) : undefined,
+      }));
+  return prune(nodes);
+}
+
+async function getParentMenuTree() {
+  const list = await getMenuList();
+  return filterSelectableMenus(list, formData.value?.id);
+}
 
 function encodeMenuFormValues(
   values: Readonly<MenuFormValues>,
 ): MenuSubmitValues {
-  const { linkSrc, ...formValues } = values;
-  if (values.type === 'link') {
-    const meta = { ...values.meta, link: linkSrc };
-    Reflect.deleteProperty(meta, 'iframeSrc');
-    return {
-      ...formValues,
-      meta,
-    };
-  }
-  if (values.type === 'embedded') {
-    const meta = { ...values.meta, iframeSrc: linkSrc };
+  const meta: Record<string, unknown> & SystemMenuApi.MenuMeta = {
+    ...values.meta,
+  };
+  // 内嵌(E)/外链(L)的链接地址由独立字段录入，分别写入 meta.iframeSrc/meta.link 以保留前端路由语义
+  if (values.menuType === 'E') {
+    meta.iframeSrc = values.linkUrl?.trim();
     Reflect.deleteProperty(meta, 'link');
-    return {
-      ...formValues,
-      meta,
-    };
+  } else if (values.menuType === 'L') {
+    meta.link = values.linkUrl?.trim();
+    Reflect.deleteProperty(meta, 'iframeSrc');
+  } else {
+    Reflect.deleteProperty(meta, 'link');
+    Reflect.deleteProperty(meta, 'iframeSrc');
   }
-  return formValues;
+  // 清理 meta 中的空值，避免存入冗余字段
+  Object.keys(meta).forEach((key) => {
+    if (meta[key] === '' || meta[key] === undefined) {
+      Reflect.deleteProperty(meta, key);
+    }
+  });
+
+  // 严格按后端 CreateMenuDto/UpdateMenuDto 白名单构造载荷，
+  // 未在下表中的字段一律不下发，防止 forbidNonWhitelisted 返回 400
+  return {
+    // 顶级菜单父ID为 0；bigint 在接口返回中可能是字符串，提交前统一转为数字
+    parentId: Number(values.parentId ?? 0),
+    menuType: values.menuType,
+    menuName: values.menuName,
+    sortOrder:
+      values.sortOrder === null || values.sortOrder === undefined
+        ? undefined
+        : Number(values.sortOrder),
+    // 按钮(F)无路由地址，且后端不接受空字符串，故不提交该字段
+    path: isMenuType(values, 'F') ? undefined : blankToUndefined(values.path),
+    // 页面组件仅菜单(C)使用，其余类型提交空串以清理历史值
+    component: isMenuType(values, 'C')
+      ? (blankToUndefined(values.component) ?? '')
+      : '',
+    perms: blankToUndefined(values.perms),
+    meta,
+    isEnabled: values.isEnabled,
+    remark: values.remark ?? '',
+  };
 }
 
 function decodeMenuFormValues(
   values: Readonly<MenuSubmitValues>,
 ): MenuFormValues {
-  let linkSrc: string | undefined;
-  if (values.type === 'link') {
-    linkSrc = values.meta?.link;
-  } else if (values.type === 'embedded') {
-    linkSrc = values.meta?.iframeSrc;
-  }
-  return { ...values, linkSrc };
+  return {
+    ...values,
+    // 顶级菜单 parentId 为 0(bigint 可能以字符串 '0' 返回)，上级选择框保持空白
+    parentId: Number(values.parentId ?? 0) > 0 ? values.parentId : undefined,
+    // 内嵌(E)/外链(L)的链接地址回读自 meta.iframeSrc/meta.link
+    linkUrl: values.meta?.iframeSrc ?? values.meta?.link,
+  };
 }
 
 const schema: VbenFormSchema<MenuFormValues>[] = [
@@ -81,19 +157,23 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
       options: getMenuTypeOptions(),
       optionType: 'button',
     },
-    defaultValue: 'menu',
-    fieldName: 'type',
+    defaultValue: 'C',
+    fieldName: 'menuType',
     formItemClass: 'col-span-2 md:col-span-2',
     label: $t('system.menu.type'),
   },
   {
     component: 'Input',
-    fieldName: 'name',
+    componentProps: {
+      maxlength: 64,
+    },
+    fieldName: 'menuName',
     label: $t('system.menu.menuName'),
+    // 长度与唯一性均与后端 DTO 保持一致：菜单名称全局不可重复，修改时传自身 id 排除自己
     rules: z
       .string()
       .min(2, $t('ui.formRules.minLength', [$t('system.menu.menuName'), 2]))
-      .max(30, $t('ui.formRules.maxLength', [$t('system.menu.menuName'), 30]))
+      .max(64, $t('ui.formRules.maxLength', [$t('system.menu.menuName'), 64]))
       .refine(
         async (value: string) => {
           return !(await isMenuNameExists(value, formData.value?.id));
@@ -110,24 +190,29 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
   {
     component: 'ApiTreeSelect',
     componentProps: {
-      api: getMenuList,
+      allowClear: true,
+      api: getParentMenuTree,
       class: 'w-full',
+      childrenField: 'children',
       filterTreeNode(input: string, node: Recordable<any>) {
         if (!input || input.length === 0) {
           return true;
         }
+        const menuName: string = node.menuName ?? '';
         const title: string = node.meta?.title ?? '';
-        if (!title) return false;
-        return title.includes(input) || $t(title).includes(input);
+        return (
+          menuName.includes(input) ||
+          (title ? $t(title).includes(input) : false)
+        );
       },
       getPopupContainer,
-      labelField: 'meta.title',
+      // 选择框展示与后端字段对齐：标签取 menuName，值取 id
+      labelField: 'menuName',
       showSearch: true,
       treeDefaultExpandAll: true,
       valueField: 'id',
-      childrenField: 'children',
     },
-    fieldName: 'pid',
+    fieldName: 'parentId',
     label: $t('system.menu.parent'),
     renderComponentContent() {
       return {
@@ -143,11 +228,24 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
           if (meta?.icon) {
             coms.push(h(IconifyIcon, { class: 'size-4', icon: meta.icon }));
           }
-          coms.push(h('span', { class: '' }, $t(label || '')));
+          // 标题(meta.title，可为多语言key)优先展示，回落到菜单名称
+          const text = meta?.title ? $t(meta.title) : label;
+          coms.push(h('span', { class: '' }, text));
           return h('div', { class: 'flex items-center gap-1' }, coms);
         },
       };
     },
+  },
+  {
+    component: 'InputNumber',
+    componentProps: {
+      class: 'w-full',
+      min: 0,
+      precision: 0,
+    },
+    defaultValue: 0,
+    fieldName: 'sortOrder',
+    label: $t('system.menu.sortOrder'),
   },
   {
     component: 'Input',
@@ -166,18 +264,21 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
   },
   {
     component: 'Input',
+    componentProps: {
+      maxlength: 255,
+    },
     dependencies: {
       show: (values) => {
-        return ['catalog', 'embedded', 'menu'].includes(values.type);
+        return !isMenuType(values, 'F');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'path',
     label: $t('system.menu.path'),
+    // 隐藏字段不参与校验，故此处规则只对目录/菜单/内嵌/外链生效
     rules: z
       .string()
-      .min(2, $t('ui.formRules.minLength', [$t('system.menu.path'), 2]))
-      .max(100, $t('ui.formRules.maxLength', [$t('system.menu.path'), 100]))
+      .regex(MENU_PATH_REGEX, $t('system.menu.pathFormat'))
       .refine(
         async (value: string) => {
           return !(await isMenuPathExists(value, formData.value?.id));
@@ -193,15 +294,37 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
   },
   {
     component: 'Input',
+    componentProps: {
+      maxlength: 255,
+      placeholder: 'https://example.com/page',
+    },
     dependencies: {
       show: (values) => {
-        return ['embedded', 'menu'].includes(values.type);
+        return isMenuType(values, 'E', 'L');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
-    fieldName: 'activePath',
+    fieldName: 'linkUrl',
+    formItemClass: 'col-span-2 md:col-span-1',
+    label: $t('system.menu.linkSrc'),
+    // 后端 meta 为自由 JSON 不校验链接，前端按 http(s):// 格式强约束，保证内嵌页/外链可正常打开
+    rules: z
+      .string()
+      .min(1, $t('ui.formRules.required', [$t('system.menu.linkSrc')]))
+      .regex(MENU_URL_REGEX, $t('system.menu.urlFormat')),
+  },
+  {
+    component: 'Input',
+    dependencies: {
+      show: (values) => {
+        return isMenuType(values, 'C', 'E');
+      },
+      triggerFields: ['menuType'],
+    },
+    fieldName: 'meta.activePath',
     help: $t('system.menu.activePathHelp'),
     label: $t('system.menu.activePath'),
+    // 激活路径必须指向一个已存在的菜单，否则无意义
     rules: z
       .string()
       .min(2, $t('ui.formRules.minLength', [$t('system.menu.path'), 2]))
@@ -218,9 +341,9 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
     },
     dependencies: {
       show: (values) => {
-        return ['catalog', 'embedded', 'link', 'menu'].includes(values.type);
+        return !isMenuType(values, 'F');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'meta.icon',
     label: $t('system.menu.icon'),
@@ -232,9 +355,9 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
     },
     dependencies: {
       show: (values) => {
-        return ['catalog', 'embedded', 'menu'].includes(values.type);
+        return isMenuType(values, 'M', 'C', 'E');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'meta.activeIcon',
     label: $t('system.menu.activeIcon'),
@@ -250,41 +373,37 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
       options: componentKeys.map((v) => ({ value: v })),
     },
     dependencies: {
-      rules: (values) => {
-        return values.type === 'menu' ? 'required' : null;
-      },
       show: (values) => {
-        return values.type === 'menu';
+        return isMenuType(values, 'C');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'component',
     label: $t('system.menu.component'),
+    rules: 'required',
   },
   {
     component: 'Input',
-    dependencies: {
-      show: (values) => {
-        return ['embedded', 'link'].includes(values.type);
-      },
-      triggerFields: ['type'],
+    componentProps: {
+      maxlength: 128,
     },
-    fieldName: 'linkSrc',
-    label: $t('system.menu.linkSrc'),
-    rules: z.url($t('ui.formRules.invalidURL')),
-  },
-  {
-    component: 'Input',
     dependencies: {
+      // 仅按钮(F)的权限标识为必填，其余类型可填可不填（未填时为 undefined/空串，均放行）
       rules: (values) => {
-        return values.type === 'button' ? 'required' : null;
+        return isMenuType(values, 'F')
+          ? z
+              .string()
+              .min(1, $t('ui.formRules.required', [$t('system.menu.authCode')]))
+              .regex(MENU_PERMS_REGEX, $t('system.menu.permsFormat'))
+          : z
+              .string()
+              .regex(MENU_PERMS_REGEX, $t('system.menu.permsFormat'))
+              .or(z.literal(''))
+              .optional();
       },
-      show: (values) => {
-        return ['button', 'catalog', 'embedded', 'menu'].includes(values.type);
-      },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
-    fieldName: 'authCode',
+    fieldName: 'perms',
     label: $t('system.menu.authCode'),
   },
   {
@@ -298,7 +417,7 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
       optionType: 'button',
     },
     defaultValue: 1,
-    fieldName: 'status',
+    fieldName: 'isEnabled',
     label: $t('system.menu.status'),
   },
   {
@@ -313,9 +432,9 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
     },
     dependencies: {
       show: (values) => {
-        return values.type !== 'button';
+        return !isMenuType(values, 'F');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'meta.badgeType',
     label: $t('system.menu.badgeType.title'),
@@ -330,10 +449,10 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
             class: 'w-full',
             disabled: values.meta?.badgeType !== 'normal',
           },
-          show: values.type !== 'button',
+          show: !isMenuType(values, 'F'),
         };
       },
-      triggerFields: ['meta.badgeType', 'type'],
+      triggerFields: ['meta.badgeType', 'menuType'],
     },
     fieldName: 'meta.badge',
     label: $t('system.menu.badge'),
@@ -350,9 +469,9 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
     },
     dependencies: {
       show: (values) => {
-        return values.type !== 'button';
+        return !isMenuType(values, 'F');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'meta.badgeVariants',
     label: $t('system.menu.badgeVariants'),
@@ -361,9 +480,9 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
     component: 'Divider',
     dependencies: {
       show: (values) => {
-        return !['button', 'link'].includes(values.type);
+        return !isMenuType(values, 'F', 'L');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'divider1',
     formItemClass: 'col-span-2 md:col-span-2 pb-0',
@@ -378,9 +497,9 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
     component: 'Checkbox',
     dependencies: {
       show: (values) => {
-        return ['menu'].includes(values.type);
+        return isMenuType(values, 'C');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'meta.keepAlive',
     renderComponentContent() {
@@ -393,9 +512,9 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
     component: 'Checkbox',
     dependencies: {
       show: (values) => {
-        return ['embedded', 'menu'].includes(values.type);
+        return isMenuType(values, 'C', 'E');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'meta.affixTab',
     renderComponentContent() {
@@ -408,9 +527,9 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
     component: 'Checkbox',
     dependencies: {
       show: (values) => {
-        return !['button'].includes(values.type);
+        return !isMenuType(values, 'F');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'meta.hideInMenu',
     renderComponentContent() {
@@ -423,9 +542,9 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
     component: 'Checkbox',
     dependencies: {
       show: (values) => {
-        return ['catalog', 'menu'].includes(values.type);
+        return isMenuType(values, 'M', 'C');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'meta.hideChildrenInMenu',
     renderComponentContent() {
@@ -438,9 +557,9 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
     component: 'Checkbox',
     dependencies: {
       show: (values) => {
-        return !['button', 'link'].includes(values.type);
+        return !isMenuType(values, 'F', 'L');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'meta.hideInBreadcrumb',
     renderComponentContent() {
@@ -453,9 +572,9 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
     component: 'Checkbox',
     dependencies: {
       show: (values) => {
-        return !['button', 'link'].includes(values.type);
+        return !isMenuType(values, 'F', 'L');
       },
-      triggerFields: ['type'],
+      triggerFields: ['menuType'],
     },
     fieldName: 'meta.hideInTab',
     renderComponentContent() {
@@ -463,6 +582,21 @@ const schema: VbenFormSchema<MenuFormValues>[] = [
         default: () => $t('system.menu.hideInTab'),
       };
     },
+  },
+  {
+    component: 'Textarea',
+    componentProps: {
+      maxLength: 500,
+      rows: 3,
+      showCount: true,
+    },
+    fieldName: 'remark',
+    formItemClass: 'col-span-2 md:col-span-2',
+    label: $t('system.menu.remark'),
+    rules: z
+      .string()
+      .max(500, $t('ui.formRules.maxLength', [$t('system.menu.remark'), 500]))
+      .optional(),
   },
 ];
 
@@ -509,7 +643,8 @@ async function onSubmit() {
   const { valid } = await formApi.validate();
   if (valid) {
     drawerApi.lock();
-    const data = await formApi.getValues();
+    // getValues() 已经过 codec.encode，返回按后端 DTO 白名单构造的载荷
+    const data = await formApi.getValues<MenuSubmitValues>();
     try {
       await (formData.value?.id
         ? updateMenu(formData.value.id, data)

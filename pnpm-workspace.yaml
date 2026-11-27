@@ -213,6 +213,7 @@ catalog:
 
 allowBuilds:
   '@parcel/watcher': true
+  bcrypt: true
   core-js: true
   esbuild: true
   lefthook: true

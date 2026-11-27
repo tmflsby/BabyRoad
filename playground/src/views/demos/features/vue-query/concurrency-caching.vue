@@ -13,7 +13,7 @@ const staleTime = 1000 * 60 * 5;
 // 公共查询配置：useQuery 与 fetchQuery 共用
 const menuQueryOptions = queryOptions({
   // 获取接口数据的函数
-  queryFn: getMenuList,
+  queryFn: () => getMenuList(),
   queryKey: ['demo', 'api', 'options'],
   staleTime,
 });
@@ -44,7 +44,7 @@ for (let i = 0; i < count; i++) {
       filterOption: (input: string, option: Recordable<any>) => {
         return option.label.toLowerCase().includes(input.toLowerCase());
       },
-      labelField: 'name',
+      labelField: 'menuName',
       showSearch: true,
       valueField: 'id',
     },
